@@ -118,6 +118,8 @@ app.get("/health", (req: Request, res: Response) => {
 app.all("/api/auth/*", authLimiter, async (req, res) => {
   try {
     // Construct the full URL using the AUTH_URL from environment variables for robustness behind a proxy
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || `localhost:${PORT}`;
     const baseUrl = process.env.AUTH_URL || `${protocol}://${host}`;
     const fullUrl = `${baseUrl}${req.url}`;
     logger.info('Constructed auth handler URL', { fullUrl });
