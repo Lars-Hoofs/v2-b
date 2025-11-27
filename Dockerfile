@@ -35,4 +35,4 @@ COPY --from=builder /app/prisma ./prisma
 EXPOSE 3000
 
 # Start the application
-ENTRYPOINT ["node", "dist/index.js"]
+ENTRYPOINT ["sh", "-c", "node dist/index.js > /var/log/app.log 2>&1"]
