@@ -165,6 +165,7 @@ app.use((req: Request, res: Response) => {
 
 // Global error handler
 app.use((err: any, req: Request, res: Response, next: any) => {
+  console.error('!!! GLOBAL ERROR HANDLER CAUGHT AN ERROR:', err);
   logger.error('Request error', {
     error: err.message,
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
