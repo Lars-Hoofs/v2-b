@@ -115,43 +115,7 @@ app.get("/health", (req: Request, res: Response) => {
 });
 
 // Better-auth routes - mount on /api/auth
-app.all("/api/auth/*", authLimiter, async (req, res) => {
-  try {
-    // Construct the full URL using the AUTH_URL from environment variables for robustness behind a proxy
-    const protocol = req.protocol || 'http';
-    const host = req.get('host') || `localhost:${PORT}`;
-    const baseUrl = process.env.AUTH_URL || `${protocol}://${host}`;
-    const fullUrl = `${baseUrl}${req.url}`;
-    logger.info('Constructed auth handler URL', { fullUrl });
-    
-    const headers = new Headers();
-    Object.entries(req.headers).forEach(([key, value]) => {
-      if (value) {
-        headers.set(key, Array.isArray(value) ? value[0] : value);
-      }
-    });
-    
-    const webRequest = new globalThis.Request(fullUrl, {
-      method: req.method,
-      headers: headers,
-      body: req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : undefined,
-    });
-    
-    const response = await auth.handler(webRequest);
-    
-    res.status(response.status);
-    response.headers.forEach((value, key) => {
-      res.setHeader(key, value);
-    });
-    
-    const body = await response.text();
-    res.send(body);
-  } catch (error: any) {
-    logger.error('Better Auth handler error', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: 'Authentication error', message: error.message });
-  }
-});
-
+app.use("/api/auth", authLimiter, auth.handler);
 // Serve widget.js (PUBLIC) with explicit CORS headers
 app.get("/widget.js", (req, res) => {
   // Explicit CORS headers for widget to work on ANY website
