@@ -52,22 +52,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - RESEND_API_KEY=${RESEND_API_KEY}
       - EMAIL_FROM=${EMAIL_FROM}
+    ports:
+      - "3000:3000"
     networks:
       - ai-chat-network-prod
 
-  nginx:
-    image: nginx:latest
-    container_name: ai-chat-nginx-prod
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    networks:
-      - ai-chat-network-prod
-    depends_on:
-      - app
 
 volumes:
   postgres_data_prod:
