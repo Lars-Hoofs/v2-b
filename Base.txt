@@ -1,0 +1,8 @@
+Acc
+
+1. Users
+	- BetterAuth
+		- 
+
+2. Workspace
+	- A workspace needs a User

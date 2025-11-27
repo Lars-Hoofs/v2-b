@@ -1,0 +1,929 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+// ============================================
+// BETTER-AUTH TABLES
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  name          String?
+  image         String?
+  
+  // Better Auth plugin fields
+  twoFactorEnabled Boolean @default(false)
+  role             String  @default("user") // user, admin
+  banned           Boolean @default(false)
+  banReason        String?
+  banExpires       DateTime?
+  
+  // Agent presence
+  status        String    @default("offline") // online, offline, away
+  lastSeenAt    DateTime  @default(now())
+  awayMessage   Json?     // { en: "I'm away", nl: "Ik ben er even niet" }
+  
+  // Settings
+  language      String    @default("en")
+  timezone      String    @default("UTC")
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // Soft delete
+  
+  // Better-auth relations
+  accounts      Account[]
+  sessions      Session[]
+  
+  // Workspace relations
+  ownedWorkspaces    Workspace[] @relation("WorkspaceOwner")
+  workspaceMemberships WorkspaceMember[]
+  workspaceInvites   WorkspaceInvite[]
+  
+  // Chat platform relations
+  assignedConversations Conversation[] @relation("AssignedAgent")
+  messages              Message[] @relation("MessageSender")
+  
+  // Audit trail
+  auditLogs     AuditLog[]
+  
+  @@index([email])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  accountId         String
+  providerId        String
+  accessToken       String?
+  refreshToken      String?
+  idToken           String?
+  expiresAt         DateTime?
+  password          String? // For email/password auth
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime? // Soft delete for Better Auth compatibility
+  
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("accounts")
+}
+
+model Session {
+  id              String   @id @default(cuid())
+  userId          String
+  expiresAt       DateTime
+  token           String   @unique
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // Soft delete for Better Auth compatibility
+  
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+  @@index([deletedAt])
+  @@map("sessions")
+}
+
+model Verification {
+  id              String   @id @default(cuid())
+  identifier      String
+  value           String
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([identifier, value])
+  @@map("verifications")
+}
+
+model TwoFactor {
+  id              String   @id @default(cuid())
+  userId          String
+  secret          String
+  backupCodes     String[] @default([])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([userId])
+  @@index([userId])
+  @@map("two_factors")
+}
+
+// ============================================
+// WORKSPACE TABLES
+// ============================================
+
+model Workspace {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  ownerId     String
+  
+  // Multilingual settings
+  defaultLanguage String   @default("en")
+  supportedLanguages String[] @default(["en", "nl"])
+  offlineMessages Json?    // { en: "No agents available", nl: "Geen medewerkers beschikbaar" }
+  
+  // Default working hours & holidays for workspace
+  defaultWorkingHours Json? // { monday: { enabled: true, start: "09:00", end: "17:00" }, ... }
+  defaultHolidays Json?     // [{ date: "2025-12-25", name: "Christmas", recurring: true }]
+  
+  // Webhooks
+  webhookUrl      String?
+  webhookSecret   String?
+  webhookEvents   String[] @default([]) // Which events to send
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime? // Soft delete
+  
+  owner       User      @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members     WorkspaceMember[]
+  invites     WorkspaceInvite[]
+  auditLogs   AuditLog[]
+  
+  // AI Chat Platform
+  agents          Agent[]
+  widgets         Widget[]
+  conversations   Conversation[]
+  knowledgeBases  KnowledgeBase[]
+  workflows       Workflow[]
+  
+  @@index([ownerId])
+  @@index([slug])
+  @@index([deletedAt])
+  @@map("workspaces")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?     // Soft delete
+  
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("workspace_members")
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  REVOKED
+}
+
+model WorkspaceInvite {
+  id          String       @id @default(cuid())
+  workspaceId String
+  email       String
+  token       String       @unique
+  role        WorkspaceRole @default(MEMBER)
+  status      InviteStatus @default(PENDING)
+  invitedById String
+  expiresAt   DateTime
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy   User         @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+  
+  @@index([workspaceId])
+  @@index([email])
+  @@index([token])
+  @@index([status])
+  @@map("workspace_invites")
+}
+
+// ============================================
+// AUDIT LOG
+// ============================================
+
+enum AuditAction {
+  USER_CREATED
+  USER_UPDATED
+  USER_DELETED
+  USER_LOGIN
+  USER_LOGOUT
+  WORKSPACE_CREATED
+  WORKSPACE_UPDATED
+  WORKSPACE_DELETED
+  MEMBER_INVITED
+  MEMBER_JOINED
+  MEMBER_REMOVED
+  MEMBER_ROLE_CHANGED
+  INVITE_SENT
+  INVITE_ACCEPTED
+  INVITE_DECLINED
+  INVITE_REVOKED
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  action      AuditAction
+  userId      String?
+  workspaceId String?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+  
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspace   Workspace?  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// AI CHAT PLATFORM
+// ============================================
+
+// AI Agent Configuration
+model Agent {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  name          String
+  description   String?
+  avatarUrl     String?
+  
+  // AI Configuration
+  aiModel       String    @default("gpt-4o-mini") // gpt-4o, claude-3-5-sonnet, etc
+  temperature   Float     @default(0.7)
+  maxTokens     Int       @default(1000)
+  systemPrompt  String    @db.Text
+  
+  // Personality & Behavior
+  personality   Json?     // Tone, style, language preferences
+  fallbackMessage String? @db.Text
+  
+  // Knowledge & Context
+  knowledgeBaseId String?
+  customFunctions Json?   // Custom API endpoints/functions
+  
+  // Safety & Guardrails
+  blockCompetitorQuestions Boolean @default(false) // Block questions about competitors
+  
+  // Workflow
+  workflowId    String?
+  
+  // Status
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+  
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  knowledgeBase KnowledgeBase? @relation(fields: [knowledgeBaseId], references: [id])
+  workflow      Workflow? @relation(fields: [workflowId], references: [id])
+  widgets       Widget[]
+  conversations Conversation[]
+  
+  @@index([workspaceId])
+  @@index([isActive])
+  @@map("agents")
+}
+
+// Embeddable Chat Widget
+model Widget {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  agentId       String
+  name          String
+  
+  // Widget Configuration
+  widgetType    String    @default("bubble") // bubble, searchbar, custom-box
+  position      String    @default("bottom-right") // bottom-right, bottom-left, top-right, top-left, middle-center, etc.
+  offsetX       Int       @default(0) // Horizontal offset in pixels
+  offsetY       Int       @default(0) // Vertical offset in pixels
+  primaryColor  String    @default("#6366f1")
+  theme         String    @default("light") // light, dark, auto
+  
+  // Advanced Layout
+  layoutMode        String? // fixed, percentage, full-height, full-width, custom
+  widthPercentage   Int?
+  heightPercentage  Int?
+  maxWidth          Int?
+  maxHeight         Int?
+  minWidth          Int?
+  minHeight         Int?
+  
+  // Bubble Customization
+  bubbleShape   String    @default("circle") // circle, square, rounded-square
+  bubbleSize    String    @default("medium") // small, medium, large, custom
+  bubbleWidth   Int?      // Custom width in pixels
+  bubbleHeight  Int?      // Custom height in pixels
+  bubbleIcon    String?   // Icon name or URL
+  bubbleText    String?   // Text on bubble (e.g. "Chat")
+  bubbleIconPosition String @default("center") // left, center, right
+  bubbleBackgroundColor String @default("#6366f1")
+  bubbleTextColor String @default("#ffffff")
+  bubbleIconColor String @default("#ffffff") // Icon color separate from text
+  bubbleShadow  String    @default("0 4px 12px rgba(0,0,0,0.15)")
+  bubbleImageUrl String?
+  bubbleImageFit String?  // cover, contain, fill
+  
+  // Bubble Hover State
+  bubbleHoverBackgroundColor String? // Hover background color
+  bubbleHoverTextColor String? // Hover text color
+  bubbleHoverIconColor String? // Hover icon color
+  bubbleHoverScale Float? @default(1.05) // Scale on hover (e.g. 1.05 = 5% larger)
+  
+  // Animation System
+  enableAnimation     Boolean? @default(true)
+  animationType       String?  // slide, fade, scale, bounce, flip
+  animationDirection  String?  // top, bottom, left, right, center
+  animationDuration   Int?     // milliseconds
+  animationDelay      Int?     // milliseconds
+  hoverAnimation      String?  // none, lift, grow, pulse, rotate
+  
+  // Icon/Image Relationship
+  imageIconRelation   String?  // cover, overlay, grow-from, side-by-side
+  imagePosition       String?  // top, bottom, left, right, background
+  imageFullHeight     Boolean? @default(false)
+  
+  // Legacy Animation (backwards compatibility)
+  bubbleAnimation String  @default("bounce") // bounce, pulse, shake, none
+  bubbleAnimationDelay Int @default(3000) // Milliseconds
+  openAnimation String    @default("slide-up") // slide-up, fade, scale, none
+  
+  // Chat Window
+  chatWidth     Int       @default(400)
+  chatHeight    Int       @default(600)
+  chatBorderRadius Int    @default(12)
+  chatAnimation String?   // none, slide-up, slide-down, fade, scale
+  chatOffsetX   Int       @default(0) // Chat window horizontal offset in pixels
+  chatOffsetY   Int       @default(0) // Chat window vertical offset in pixels
+  
+  // Header Customization
+  headerTitle   String?
+  headerSubtitle String?
+  headerBackgroundColor String @default("#6366f1")
+  headerTextColor String @default("#ffffff")
+  headerCloseIcon String? // Custom close icon (Remixicon name)
+  headerCloseIconColor String @default("#ffffff") // Close button icon color
+  headerCloseIconHoverColor String? // Close button hover color
+  headerCloseIconBackgroundColor String? // Close button background
+  headerCloseIconHoverBackgroundColor String? // Close button hover background
+  showAgentAvatar Boolean @default(true)
+  showOnlineStatus Boolean @default(true)
+  onlineStatusColor String @default("#22c55e") // Green dot color
+  avatarBackgroundColor String? // Avatar background color
+  
+  // Message Styling
+  userMessageColor String @default("#6366f1")
+  userMessageTextColor String @default("#ffffff") // Text color in user messages
+  botMessageColor String  @default("#f3f4f6")
+  botMessageTextColor String @default("#111827") // Text color in bot messages
+  messageBorderRadius Int @default(12)
+  borderColor     String? // Custom border color
+  
+  // Input Styling
+  inputBorderColor String @default("#e5e7eb") // Input border color
+  inputFocusBorderColor String? // Border color when focused
+  inputBackgroundColor String @default("#ffffff") // Input background
+  inputTextColor String @default("#1f2937") // Input text color
+  inputPlaceholderColor String? // Placeholder text color
+  
+  // Send Button Styling
+  sendButtonIcon String? // Custom send icon (Remixicon name)
+  sendButtonBackgroundColor String? // Send button background (defaults to primaryColor)
+  sendButtonIconColor String @default("#ffffff") // Send button icon color
+  sendButtonHoverBackgroundColor String? // Hover state background
+  sendButtonHoverIconColor String? // Hover state icon color
+  
+  // Advanced Styling
+  backgroundGradient Json?    // { from: "#xxx", to: "#xxx", direction: "to-br" }
+  backdropBlur      Int?      // 0-40px
+  borderWidth       Int?      // 0-10px
+  shadowIntensity   String?   // none, sm, md, lg, xl
+  glassEffect       Boolean?  @default(false)
+  
+  // Behavior
+  greeting      String?   @db.Text
+  placeholder   String    @default("Type your message...")
+  suggestedQuestions Json? // Array of suggested questions
+  autoOpen      Boolean   @default(false)
+  autoOpenDelay Int       @default(5000) // Milliseconds
+  soundEnabled  Boolean   @default(true)
+  
+  // AI-Only Mode & Availability
+  aiOnlyMode    Boolean   @default(false) // AI cannot transfer to human agent
+  aiOnlyMessage Json?     // { en: "No agents available", nl: "Geen medewerkers beschikbaar" }
+  workingHours  Json?     // { monday: { enabled: true, start: "09:00", end: "17:00" }, ... }
+  holidays      Json?     // [{ date: "2025-12-25", name: "Christmas", recurring: true }]
+  
+  // Branding
+  showBranding  Boolean   @default(true)
+  brandingText  String    @default("Powered by AI Chat")
+  brandingUrl   String?
+  
+  // Advanced
+  customCss     String?   @db.Text
+  customJs      String?   @db.Text
+  allowedDomains String[] // Domain whitelist
+  zIndex        Int       @default(999999)
+  
+  // Status
+  isActive      Boolean   @default(true)
+  installCode   String    @unique // Unique install code
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+  
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent         Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  
+  @@index([workspaceId])
+  @@index([agentId])
+  @@index([installCode])
+  @@map("widgets")
+}
+
+// Conversation/Chat Session
+enum ConversationStatus {
+  ACTIVE
+  WAITING
+  RESOLVED
+  ARCHIVED
+}
+
+model Conversation {
+  id            String      @id @default(cuid())
+  workspaceId   String
+  widgetId      String?
+  agentId       String
+  
+  // Visitor Info
+  visitorId     String      // Anonymous visitor ID
+  visitorName   String?
+  visitorEmail  String?
+  visitorMetadata Json?     // Custom data (location, device, etc)
+  
+  // Assignment
+  assignedToId  String?     // Human agent takeover
+  status        ConversationStatus @default(ACTIVE)
+  visibleInDashboard Boolean @default(false) // Only show when human agent is requested
+  
+  // Metadata
+  source        String?     // web, api, etc
+  tags          String[]
+  rating        Int?        // 1-5 satisfaction rating
+  feedback      String?     @db.Text
+  
+  // Workflow/Stateful conversation
+  state         Json?       // Arbitrary state variables
+  pendingPrompt String?     // If waiting for user input, store what we asked
+  expectedInput String?     // e.g., "track_and_trace", "email", "order_id"
+  
+    // Timestamps
+    startedAt     DateTime    @default(now())
+    lastMessageAt DateTime    @default(now())
+    resolvedAt    DateTime?
+    createdAt     DateTime    @default(now())
+    updatedAt     DateTime    @updatedAt
+    deletedAt     DateTime?   // CRITICAL: Soft delete
+    
+    workspace     Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  widget        Widget?     @relation(fields: [widgetId], references: [id])
+  agent         Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  assignedTo    User?       @relation("AssignedAgent", fields: [assignedToId], references: [id])
+  messages      Message[]
+  
+  @@index([workspaceId])
+  @@index([widgetId])
+  @@index([agentId])
+  @@index([visitorId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([lastMessageAt])
+  // Performance indexes
+  @@index([workspaceId, status]) // For filtering conversations
+  @@index([workspaceId, createdAt]) // For analytics
+  @@index([assignedToId, status]) // For agent inbox
+  @@index([status, lastMessageAt]) // For sorting active conversations
+  @@map("conversations")
+}
+
+// Chat Messages
+enum MessageRole {
+  USER      // Visitor/customer
+  ASSISTANT // AI Agent
+  AGENT     // Human agent
+  SYSTEM    // System messages
+}
+
+model Message {
+  id              String      @id @default(cuid())
+  conversationId  String
+  
+  // Content
+  role            MessageRole
+  content         String      @db.Text
+  contentType     String      @default("text") // text, image, file, audio, video
+  
+  // Metadata
+  metadata        Json?       // AI response metadata, function calls, etc
+  tokens          Int?        // Token usage
+  latency         Int?        // Response time in ms
+  
+  // Sender (for AGENT role)
+  senderId        String?
+  
+  // Status
+  isRead          Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender          User?        @relation("MessageSender", fields: [senderId], references: [id])
+  attachments     MediaAttachment[]
+  
+  @@index([conversationId])
+  @@index([role])
+  @@index([createdAt])
+  // Performance indexes
+  @@index([conversationId, createdAt]) // For paginated message list
+  @@index([role, createdAt]) // For analytics
+  @@index([conversationId, role]) // For filtering by role
+  @@map("messages")
+}
+
+// Media attachments for messages
+enum MediaType {
+  IMAGE
+  FILE
+  AUDIO
+  VIDEO
+}
+
+model MediaAttachment {
+  id          String    @id @default(cuid())
+  messageId   String
+  
+  // File info
+  type        MediaType
+  fileName    String
+  fileSize    Int       // In bytes
+  mimeType    String
+  url         String    // Storage URL (S3, local, etc)
+  thumbnailUrl String?  // For images/videos
+  
+  // Media metadata
+  width       Int?      // For images/videos
+  height      Int?      // For images/videos
+  duration    Int?      // For audio/video (in seconds)
+  
+  // Processing
+  isProcessed Boolean   @default(false)
+  
+  createdAt   DateTime  @default(now())
+  
+  message     Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  
+  @@index([messageId])
+  @@index([type])
+  @@map("media_attachments")
+}
+
+// Knowledge Base for RAG
+model KnowledgeBase {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  name          String
+  description   String?
+  
+  // Settings
+  embeddingModel String   @default("text-embedding-3-small")
+  chunkSize     Int       @default(1000)
+  chunkOverlap  Int       @default(200)
+  
+  // Status
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+  
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  documents     Document[]
+  agents        Agent[]
+  scrapeJobs    ScrapeJob[]
+  
+  @@index([workspaceId])
+  @@map("knowledge_bases")
+}
+
+// Knowledge Base Documents
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Document {
+  id              String         @id @default(cuid())
+  knowledgeBaseId String
+  
+  // Content
+  title           String
+  content         String         @db.Text
+  sourceUrl       String?
+  fileUrl         String?
+  mimeType        String?
+  
+  // Processing
+  status          DocumentStatus @default(PENDING)
+  errorMessage    String?
+  chunkCount      Int            @default(0)
+  
+  // Metadata
+  metadata        Json?
+  tags            String[]
+  
+  // Timestamps
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  knowledgeBase   KnowledgeBase  @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  chunks          DocumentChunk[]
+  
+  @@index([knowledgeBaseId])
+  @@index([status])
+  @@map("documents")
+}
+
+// Vector chunks for semantic search with pgvector
+model DocumentChunk {
+  id          String                        @id @default(cuid())
+  documentId  String
+  
+  // Content
+  content     String                        @db.Text
+  embedding   Unsupported("vector(1536)")? // pgvector for OpenAI text-embedding-3-small (1536 dimensions)
+  
+  // Position
+  chunkIndex  Int
+  startChar   Int
+  endChar     Int
+  
+  // Metadata
+  metadata    Json?
+  
+  createdAt   DateTime                      @default(now())
+  
+  document    Document                      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  @@index([documentId])
+  @@map("document_chunks")
+}
+
+// Scrape Job Tracking
+enum ScrapeJobStatus {
+  DISCOVERING  // Finding URLs
+  PENDING      // Ready to scrape selected URLs
+  IN_PROGRESS  // Currently scraping
+  COMPLETED    // All done
+  FAILED       // Error occurred
+  CANCELLED    // User cancelled
+}
+
+model ScrapeJob {
+  id              String          @id @default(cuid())
+  knowledgeBaseId String
+  userId          String
+  
+  // Job Details
+  baseUrl         String
+  status          ScrapeJobStatus @default(DISCOVERING)
+  
+  // URLs
+  discoveredUrls  String[]        @default([]) // All found URLs
+  selectedUrls    String[]        @default([]) // URLs user wants to scrape
+  scrapedUrls     String[]        @default([]) // URLs already scraped
+  failedUrls      Json?           // URLs that failed with error messages
+  
+  // Progress
+  totalUrls       Int             @default(0)
+  scrapedCount    Int             @default(0)
+  failedCount     Int             @default(0)
+  
+  // Settings
+  maxPages        Int             @default(0)  // 0 = unlimited
+  
+  // Error
+  errorMessage    String?
+  
+  // Timestamps
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  completedAt     DateTime?
+  
+  knowledgeBase   KnowledgeBase   @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  
+  @@index([knowledgeBaseId])
+  @@index([userId])
+  @@index([status])
+  @@map("scrape_jobs")
+}
+
+// ============================================
+// NODE-BASED WORKFLOW ENGINE
+// ============================================
+
+model Workflow {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  
+  // Workflow Data
+  version     Int       @default(1)
+  isActive    Boolean   @default(false)
+  startNodeIds String[]  @default([]) // IDs of nodes connected to START (entry points)
+  
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agents      Agent[]
+  nodes       WorkflowNode[]
+  edges       WorkflowEdge[]
+  executions  WorkflowExecution[]
+  
+  @@index([workspaceId])
+  @@index([isActive])
+  @@map("workflows")
+}
+
+// Node Types:
+// TRIGGER: wait, inactivity, message_received, specific_intent
+// CONDITION: contains_keyword, sentiment_analysis, business_hours
+// ACTION: send_message, call_api, send_email, assign_to_human
+// AI_ACTION: ai_response, knowledge_base_search, function_call
+
+enum NodeType {
+  // Triggers
+  TRIGGER_WAIT
+  TRIGGER_INACTIVITY
+  TRIGGER_MESSAGE
+  TRIGGER_INTENT
+  TRIGGER_USER_INPUT          // Wait for user to send specific input
+  
+  // Conditions
+  CONDITION_KEYWORD
+  CONDITION_SENTIMENT
+  CONDITION_TIME
+  CONDITION_CUSTOM
+  CONDITION_REGEX             // Match regex pattern
+  CONDITION_EQUALS            // Exact match
+  CONDITION_CONTAINS          // Contains text
+  CONDITION_VARIABLE          // Check variable value
+  CONDITION_API_RESPONSE      // Check API response
+  
+  // Actions
+  ACTION_MESSAGE
+  ACTION_EMAIL
+  ACTION_API_CALL
+  ACTION_ASSIGN_HUMAN
+  ACTION_END_CONVERSATION
+  ACTION_SET_VARIABLE         // Store value in conversation state
+  ACTION_WAIT_FOR_INPUT       // Ask question and wait for answer
+  ACTION_VALIDATE_INPUT       // Validate user input format
+  
+  // AI Actions
+  AI_RESPONSE
+  AI_SEARCH_KB
+  AI_FUNCTION_CALL
+  AI_CLASSIFY_INTENT
+  AI_EXTRACT_INFO             // Extract specific info from message
+  AI_VALIDATE_FORMAT          // AI validates format (email, phone, etc)
+}
+
+model WorkflowNode {
+  id          String     @id @default(cuid())
+  workflowId  String
+  
+  // Node Identity
+  nodeId      String     // Unique ID for flow (e.g., "node_1")
+  type        NodeType
+  label       String
+  
+  // Configuration (JSON based on type)
+  config      Json       // Type-specific configuration
+  
+  // Position (for visual editor)
+  positionX   Float
+  positionY   Float
+  
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  
+  workflow    Workflow   @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  outgoingEdges WorkflowEdge[] @relation("SourceNode")
+  incomingEdges WorkflowEdge[] @relation("TargetNode")
+  
+  @@unique([workflowId, nodeId])
+  @@index([workflowId])
+  @@map("workflow_nodes")
+}
+
+model WorkflowEdge {
+  id          String   @id @default(cuid())
+  workflowId  String
+  
+  // Connection
+  sourceNodeId String
+  targetNodeId String
+  
+  // Condition (optional)
+  condition   Json?    // Condition to follow this edge
+  label       String?
+  
+  createdAt   DateTime @default(now())
+  
+  workflow    Workflow     @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  sourceNode  WorkflowNode @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  targetNode  WorkflowNode @relation("TargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
+  
+  @@index([workflowId])
+  @@index([sourceNodeId])
+  @@index([targetNodeId])
+  @@map("workflow_edges")
+}
+
+// Workflow Execution Tracking
+enum ExecutionStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model WorkflowExecution {
+  id              String          @id @default(cuid())
+  workflowId      String
+  conversationId  String?         // If triggered by conversation
+  
+  // Execution State
+  status          ExecutionStatus @default(RUNNING)
+  currentNodeId   String?
+  executionData   Json?           // Current state/variables
+  
+  // Results
+  error           String?         @db.Text
+  logs            Json[]          // Execution logs
+  
+  // Timestamps
+  startedAt       DateTime        @default(now())
+  completedAt     DateTime?
+  
+  workflow        Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  
+  @@index([workflowId])
+  @@index([status])
+  @@map("workflow_executions")
+}

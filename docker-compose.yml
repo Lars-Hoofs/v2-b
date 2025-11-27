@@ -1,0 +1,105 @@
+services:
+  # PostgreSQL Database with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-chat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_chat_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d
+    networks:
+      - ai-chat-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and Socket.io adapter
+  redis:
+    image: redis:7-alpine
+    container_name: ai-chat-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-chat-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ai-chat-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - ai-chat-network
+    depends_on:
+      - postgres
+
+  # Redis Commander (Redis GUI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: ai-chat-redis-commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - ai-chat-network
+    depends_on:
+      - redis
+
+  # Prisma Studio (Database GUI) - Development only
+  prisma-studio:
+    image: node:20-alpine
+    container_name: ai-chat-prisma-studio
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ai_chat_platform
+    command: sh -c "npm install -g prisma && mkdir -p prisma && cp /schema/schema.prisma prisma/schema.prisma && npx prisma studio --browser none --port 5555 --url 'postgresql://postgres:postgres@postgres:5432/ai_chat_platform'"
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./prisma/schema.prisma:/schema/schema.prisma:ro
+    networks:
+      - ai-chat-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  ai-chat-network:
+    driver: bridge
