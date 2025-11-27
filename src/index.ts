@@ -117,9 +117,10 @@ app.get("/health", (req: Request, res: Response) => {
 // Better-auth routes - mount on /api/auth
 app.all("/api/auth/*", authLimiter, async (req, res) => {
   try {
-    const protocol = req.protocol || 'http';
-    const host = req.get('host') || `localhost:${PORT}`;
-    const fullUrl = `${protocol}://${host}${req.url}`;
+    // Construct the full URL using the AUTH_URL from environment variables for robustness behind a proxy
+    const baseUrl = process.env.AUTH_URL || `${protocol}://${host}`;
+    const fullUrl = `${baseUrl}${req.url}`;
+    logger.info('Constructed auth handler URL', { fullUrl });
     
     const headers = new Headers();
     Object.entries(req.headers).forEach(([key, value]) => {
